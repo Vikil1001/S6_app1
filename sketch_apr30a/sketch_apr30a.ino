@@ -11,6 +11,50 @@
 #define ANALOG_PIN_VENT_VITESSE 27
 #define ANALOG_PIN_VENT_DIRECTION 35
 
+int lumiere;
+float temperature1;
+float temperature2;
+float humidite;
+float pression;
+float pluie;
+float vitesse;
+int direction;
+
+bool new_value = false;
+
+
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+
+HardwareSerial SerialUART(1);
+
+BLEServer *pServer = NULL;
+BLECharacteristic *pTxCharacteristic;
+BLECharacteristic *pRxCharacteristic;
+bool deviceConnected = false;
+bool oldDeviceConnected = false;
+uint8_t txValue = 0;
+
+#define SERVICE_UUID           "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"  // UART service UUID
+#define CHARACTERISTIC_UUID_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define CHARACTERISTIC_UUID_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+
+//set pin for UART com
+#define RX_PIN 13
+#define TX_PIN 4
+
+class MyServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer *pServer) {
+    deviceConnected = true;
+  };
+
+  void onDisconnect(BLEServer *pServer) {
+    deviceConnected = false;
+  }
+};
+
 Adafruit_DPS310 dps;
 SFEWeatherMeterKit weatherMeterKit(ANALOG_PIN_VENT_DIRECTION, ANALOG_PIN_VENT_VITESSE, ANALOG_PIN_PLUIE);
 
@@ -18,39 +62,88 @@ void setup() {
   Serial.begin(115200);
   while (!Serial);
 
-  // Démarrer le capteur
+  // Démarrer le capteur pression et temperature
   if (!dps.begin_I2C()) {
     Serial.println("Échec de communication avec le DPS310 !");
     while (1);
   }
   
+  // set for spark fun
   #ifdef SFE_WMK_PLAFTORM_UNKNOWN
-    // The platform you're using hasn't been added to the library, so the
-    // expected ADC values have been calculated assuming a 10k pullup resistor
-    // and a perfectly linear 16-bit ADC. Your ADC likely has a different
-    // resolution, so you'll need to specify it here:
     weatherMeterKit.setADCResolutionBits(10);
-    
-    Serial.println(F("Unknown platform! Please edit the code with your ADC resolution!"));
-    Serial.println();
   #endif
 
   // Begin weather meter kit
   weatherMeterKit.begin();
 
-  Serial.println("DPS310 détecté !");
+  // Create the BLE Device
+  BLEDevice::init("UART Master");
+
+  // Create the BLE Server
+  pServer = BLEDevice::createServer();
+  pServer->setCallbacks(new MyServerCallbacks());
+
+  // Create the BLE Service
+  BLEService *pService = pServer->createService(SERVICE_UUID);
+
+  // Create a BLE Characteristic
+  pTxCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_TX, BLECharacteristic::PROPERTY_NOTIFY);
+  pTxCharacteristic->addDescriptor(new BLE2902());
+  pRxCharacteristic = pService->createCharacteristic(CHARACTERISTIC_UUID_RX, BLECharacteristic::PROPERTY_NOTIFY);
+
+  // Start the service
+  pService->start();
+
+  // Start advertising
+  pServer->getAdvertising()->addServiceUUID(pService->getUUID());
+  pServer->getAdvertising()->start();
+  Serial.println("Waiting a client connection to notify...");
+
+  // Start com for UART
+  SerialUART.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
 }
 
 void loop() {
+
+  // disconnecting
+  if (!deviceConnected && oldDeviceConnected) {
+    delay(500);                   // give the bluetooth stack the chance to get things ready
+    pServer->startAdvertising();  // restart advertising
+    Serial.println("start advertising");
+    oldDeviceConnected = deviceConnected;
+  }
+  // connecting
+  if (deviceConnected && !oldDeviceConnected) {
+    // do stuff here on connecting
+    oldDeviceConnected = deviceConnected;
+  }
+
   readBarometre();
   readHumidite();
   readVent();
   readPluie();
   readLumiere();
+
+  if (deviceConnected) {
+    uint8_t value = 'N';
+    pTxCharacteristic->setValue(&value, 1);
+    pTxCharacteristic->notify();
+  } 
+  if (new_value == true){
+    String message = "Lumière: " + String(lumiere) +
+                    ", Temperature: " + String((temperature1+temperature2)/2, 1) + "°C" +
+                    ", Humidité: " + String(humidite, 1) + "%" +
+                    ", Pression: " + String(pression, 2) + "hPa" +
+                    ", Pluie: " + String(pluie, 1) + "mm" +
+                    ", Vent: " + String(vitesse, 1) + "km/h" +
+                    ", Direction: " + String(direction) + "°\t";
+
+    SerialUART.println(message);
+    new_value = false;
+  }
 }
 
 void readBarometre(){
-  Serial.println("--------------------------");
   // Create sensor event structs for temperature and pressure
   sensors_event_t temp_event;
   sensors_event_t pressure_event;
@@ -59,25 +152,25 @@ void readBarometre(){
   dps.getEvents(&temp_event, &pressure_event);
 
   // Print temperature in Celsius
-  Serial.print("Temp: ");
-  Serial.print(temp_event.temperature);
-  Serial.println(" °C");
+  if (temperature1 != temp_event.temperature) {
+    temperature1 = temp_event.temperature;
+    new_value = true;
+  }
 
   // Print pressure in Pascals (converted from hPa)
-  Serial.print("Pressure: ");
-  Serial.print(pressure_event.pressure * 100); // Convert hPa to Pa
-  Serial.println(" Pa");
+  if (pression != pressure_event.pressure * 100 ){
+    pression = pressure_event.pressure * 100;
+    new_value = true;
+  }
 
-  Serial.println("--------------------------");
 }
 
 void readHumidite(){
-  Serial.println("--------------------------");
   int i, j;
   int duree[42];
   unsigned long pulse;
   byte data[5];
-  float humidite;
+  float humi;
   float temperature;
   int broche = 16;
 
@@ -116,48 +209,51 @@ void readHumidite(){
   if ( (data[0] + data[1] + data[2] + data[3]) != data[4] ) 
     Serial.println(" Erreur checksum");
 
-  humidite = data[0] + (data[1] / 256.0);
+  humi = data[0] + (data[1] / 256.0);
   temperature = data [2] + (data[3] / 256.0);
-  Serial.printf("Humidite = %4.0f \%%  Temperature = %4.2f degreC \n", humidite, temperature);
-  Serial.println("--------------------------");
+  
+  if (humidite != humi){
+    humidite = humi;
+    new_value = true;
+  }
+
+  if (temperature2 != temperature){
+    temperature2 = temperature;
+    new_value = true;
+  }
 }
 
 void readVent(){
-  Serial.println("--------------------------");
   pinMode(ANALOG_PIN_VENT_VITESSE, INPUT);
   pinMode(ANALOG_PIN_VENT_DIRECTION, INPUT);
 
-  Serial.print("Vitesse value : ");
-  //int analogValueVitesse = analogRead(ANALOG_PIN_VENT_VITESSE);  // Range: 0–4095
-  //Serial.println(analogValueVitesse);
-  Serial.println(weatherMeterKit.getWindSpeed());
+  if (vitesse != weatherMeterKit.getWindSpeed()){
+    vitesse = weatherMeterKit.getWindSpeed();
+    new_value = true;
+  }
 
-  Serial.print("Direction value : ");
-  //int analogValueDirection = analogRead(ANALOG_PIN_VENT_DIRECTION);  // Range: 0–4095
-  //Serial.println(analogValueDirection);
-  Serial.println(weatherMeterKit.getWindDirection());
-  Serial.println("--------------------------");
+  if (direction != weatherMeterKit.getWindDirection()){
+    direction = weatherMeterKit.getWindDirection();
+    new_value = true;
+  }
 }
 
 void readPluie(){
-  Serial.println("--------------------------");
   pinMode(ANALOG_PIN_PLUIE, INPUT);
 
-  Serial.print("Pluie value : ");
-  //int analogValuePluie = analogRead(ANALOG_PIN_PLUIE);  // Range: 0–4095
-  //Serial.println(analogValuePluie);
-  Serial.println(weatherMeterKit.getTotalRainfall());
-  Serial.println("--------------------------");
+  if (pluie != weatherMeterKit.getTotalRainfall()){
+    pluie = weatherMeterKit.getTotalRainfall();
+    new_value = true;
+  }
 }
 
 void readLumiere(){
-  Serial.println("--------------------------");
   pinMode(ANALOG_PIN_LUMINERE, INPUT);
-
-  Serial.print("Lumiere value : ");
-  int analogValueLumiere = analogRead(ANALOG_PIN_LUMINERE);  // Range: 0–4095
-  Serial.println(analogValueLumiere);
-  Serial.println("--------------------------");
+  int lum = analogRead(ANALOG_PIN_LUMINERE);
+  if (lumiere  != lum){
+    lumiere  = lum;
+    new_value = true;
+  }
 }
 
 
