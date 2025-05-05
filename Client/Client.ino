@@ -5,8 +5,13 @@
  * updated by chegewara
  */
 
+#define RX_PIN 12
+#define TX_PIN 14
+
 #include "BLEDevice.h"
 //#include "BLEScan.h"
+
+HardwareSerial SerialUART(1);
 
 // The remote service we wish to connect to.
 static BLEUUID serviceUUID("6E400001-B5A3-F393-E0A9-E50E24DCCA9E");
@@ -22,13 +27,20 @@ static BLERemoteCharacteristic *pRemoteCharacteristic_Rx;
 static BLEAdvertisedDevice *myDevice;
 
 static void notifyCallback(BLERemoteCharacteristic *pBLERemoteCharacteristic, uint8_t *pData, size_t length, bool isNotify) {
-  Serial.print("Notify callback for characteristic ");
-  Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
-  Serial.print(" of data length ");
-  Serial.println(length);
-  Serial.print("data: ");
-  Serial.write(pData, length);
-  Serial.println();
+  //Serial.print("Notify callback for characteristic ");
+  //Serial.print(pBLERemoteCharacteristic->getUUID().toString().c_str());
+  //Serial.print(" of data length ");
+  //Serial.println(length);
+  //Serial.print("data: ");
+  //Serial.write(pData, length);
+  //Serial.println();
+  if (*pData == 'N'){ //Si le code reçu correspond au code de nouvelle valeur
+    if (SerialUART.available()) {
+      String msg = SerialUART.readStringUntil('\t');
+      Serial.print("Nouvelles valeurs : ");
+      Serial.println(msg);
+    }
+  }
 }
 
 class MyClientCallback : public BLEClientCallbacks {
@@ -133,6 +145,7 @@ void setup() {
   pBLEScan->setWindow(449);
   pBLEScan->setActiveScan(true);
   pBLEScan->start(5, false);
+  SerialUART.begin(115200, SERIAL_8N1, RX_PIN, TX_PIN);
 }  // End of setup.
 
 // This is the Arduino main loop function.
@@ -154,10 +167,10 @@ void loop() {
   // with the current time since boot.
   if (connected) {
     String newValue = "Time since boot: " + String(millis() / 1000);
-    Serial.println("Setting new characteristic value to \"" + newValue + "\"");
+    //Serial.println("Setting new characteristic value to \"" + newValue + "\"");
 
     // Set the characteristic's value to be the array of bytes that is actually a string.
-    pRemoteCharacteristic_Tx->writeValue(newValue.c_str(), newValue.length());
+    //pRemoteCharacteristic_Tx->writeValue(newValue.c_str(), newValue.length());
   } else if (doScan) {
     BLEDevice::getScan()->start(0);  // this is just example to start scan after disconnect, most likely there is better way to do it in arduino
   }
